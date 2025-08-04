@@ -412,6 +412,17 @@ class _ChatScreenState extends State<ChatScreen> {
   bool encrypted = false;
   String? incomingPass;
 
+ bool _showEmojiPicker = false;
+  final List<String> _emojis = [
+    // Apple-style popular emojis (можно расширить)
+    "😀","😁","😂","🤣","😃","😄","😅","😆","😉","😊","😋","😎","😍","😘","🥰","😗","😙","😚",
+    "🙂","🤗","🤩","🤔","🤨","😐","😑","😶","🙄","😏","😣","😥","😮","🤐","😯","😪","😫","🥱",
+    "😴","😌","😛","😜","😝","🤤","😒","😓","😔","😕","🙃","🤑","😲","☹️","🙁","😖","😞","😟",
+    "😤","😢","😭","😦","😧","😨","😩","🤯","😬","😰","😱","🥵","🥶","😳","🤪","😵","😡","😠",
+    "🤬","😷","🤒","🤕","🤢","🤮","🥴","😇","🥳","🥺","🤠","🤡","🤥","🤫","🤭","🧐","🤓","😈",
+    "👿","👹","👺","💀","👻","👽","🤖","💩","😺","😸","😹","😻","😼","😽","🙀","😿","😾"
+  ];
+
   @override
   void initState() {
     super.initState();
@@ -539,6 +550,18 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {});
   }
 
+  void _onEmojiSelected(String emoji) {
+    final text = _msgCtrl.text;
+    final selection = _msgCtrl.selection;
+    final newText = text.replaceRange(
+      selection.start,
+      selection.end,
+      emoji,
+    );
+    _msgCtrl.text = newText;
+    _msgCtrl.selection = TextSelection.collapsed(offset: selection.start + emoji.length);
+    setState(() {});
+  }
   @override
   void dispose() {
     widget.onClosed();
@@ -616,9 +639,39 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
+            // --- Кнопка смайлика ---
+            IconButton(
+              icon: Icon(Icons.emoji_emotions_outlined, color: Colors.orange),
+              onPressed: encrypted
+                  ? () => setState(() => _showEmojiPicker = !_showEmojiPicker)
+                  : null,
+              tooltip: 'Смайлики',
+            ),
             IconButton(icon: Icon(Icons.send), onPressed: encrypted ? _sendMessage : null),
           ]),
         ),
+
+         // --- Панель emoji picker ---
+        if (_showEmojiPicker && encrypted)
+          Container(
+            height: 250,
+            color: Colors.grey[900],
+            child: GridView.builder(
+              padding: EdgeInsets.all(8),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 8,
+                mainAxisSpacing: 8,
+                crossAxisSpacing: 8,
+              ),
+              itemCount: _emojis.length,
+              itemBuilder: (_, i) => GestureDetector(
+                onTap: () {
+                  _onEmojiSelected(_emojis[i]);
+                },
+                child: Center(
+                  child: Text(
+                    _emojis[i],
+                    style: TextStyle(fontSize: 28),),),),),),
       ]),
     );
   }
