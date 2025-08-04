@@ -1,12 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/material.dart';
+
 import 'package:crypto/crypto.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:contacts_service/contacts_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:country_code_picker/country_code_picker.dart';
+import 'package:contacts_service/contacts_service.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:open_file/open_file.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,10 +27,7 @@ void main() async {
 class MyMessengerApp extends StatefulWidget {
   final String? initialPhone;
   final double initialFontScale;
-  MyMessengerApp({
-    this.initialPhone,
-    required this.initialFontScale,
-  });
+  MyMessengerApp({this.initialPhone, required this.initialFontScale});
   @override
   _MyMessengerAppState createState() => _MyMessengerAppState();
 }
@@ -50,8 +52,8 @@ class _MyMessengerAppState extends State<MyMessengerApp> {
     return MaterialApp(
       title: 'Secure Flutter Chat',
       theme: ThemeData.dark(),
-      builder: (context, child) {
-        final mq = MediaQuery.of(context);
+      builder: (ctx, child) {
+        final mq = MediaQuery.of(ctx);
         return MediaQuery(
           data: mq.copyWith(textScaleFactor: _fontScale),
           child: child!,
@@ -79,23 +81,21 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
   bool _syncContacts = true, _loading = false;
 
   Future<void> _onContinue() async {
-    final number = _phoneCtrl.text.trim();
-    if (number.isEmpty) return;
+    final num = _phoneCtrl.text.trim();
+    if (num.isEmpty) return;
     setState(() => _loading = true);
-    final full = '${_countryCode.dialCode}$number';
+    final full = '${_countryCode.dialCode}$num';
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('phone', full);
     await prefs.setBool('sync', _syncContacts);
-
-    // передаём текущий fontScale и колбэк обновления из корня
-    final rootState = context.findAncestorStateOfType<_MyMessengerAppState>()!;
+    final root = context.findAncestorStateOfType<_MyMessengerAppState>()!;
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
         builder: (_) => ChatListScreen(
           nick: full,
-          fontScale: rootState._fontScale,
-          onFontScaleChanged: rootState._updateFontScale,
+          fontScale: root._fontScale,
+          onFontScaleChanged: root._updateFontScale,
         ),
       ),
     );
@@ -118,7 +118,12 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
           SizedBox(height: 16),
           Center(child: Text('Телефон', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold))),
           SizedBox(height: 8),
-          Center(child: Text('Проверьте код страны и введите свой номер телефона.', textAlign: TextAlign.center)),
+          Center(
+            child: Text(
+              'Проверьте код страны и введите свой номер телефона.',
+              textAlign: TextAlign.center,
+            ),
+          ),
           SizedBox(height: 24),
           Row(children: [
             CountryCodePicker(
@@ -168,13 +173,14 @@ class ChatService {
   Future<void> connect(String nick) async {
     this.nick = nick;
     _socket = await Socket.connect('127.0.0.1', 12345);
-    utf8.decoder.bind(_socket!).transform(const LineSplitter()).listen((line) {
-      _pktController.add(json.decode(line));
+    utf8.decoder.bind(_socket!).transform(const LineSplitter()).listen((l) {
+      _pktController.add(json.decode(l));
     });
     _socket!.write(json.encode({'type': 'presence', 'nick': nick}) + '\n');
   }
 
   void send(Map<String, dynamic> pkt) => _socket?.write(json.encode(pkt) + '\n');
+
   void dispose() {
     _socket?.destroy();
     _pktController.close();
@@ -191,7 +197,8 @@ List<int> deriveMsgKey(String p) => sha256.convert(utf8.encode(p)).bytes;
 List<int> xorBytes(List<int> d, List<int> k) =>
     [for (var i = 0; i < d.length; i++) d[i] ^ k[i % k.length]];
 
-String encryptStr(String s, List<int> k) => base64.encode(xorBytes(utf8.encode(s), k));
+String encryptStr(String s, List<int> k) =>
+    base64.encode(xorBytes(utf8.encode(s), k));
 
 String decryptStr(String s, List<int> k) {
   try {
@@ -205,13 +212,11 @@ class ChatListScreen extends StatefulWidget {
   final String nick;
   final double fontScale;
   final ValueChanged<double> onFontScaleChanged;
-
   ChatListScreen({
     required this.nick,
     required this.fontScale,
     required this.onFontScaleChanged,
   });
-
   @override
   _ChatListScreenState createState() => _ChatListScreenState();
 }
@@ -310,6 +315,26 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
     }
   }
 
+  void _openChat(String peer, {String? initial, bool initiator = true}) {
+    if (!recent.contains(peer)) {
+      recent.insert(0, peer);
+      if (recent.length > 50) recent.removeLast();
+      _saveRecent();
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          service: _service,
+          peer: peer,
+          initialPassword: initial,
+          initiator: initiator,
+          onClosed: _loadRecent,
+        ),
+      ),
+    );
+  }
+
   void _accept(_PendingReq r) {
     _service.send({
       'type': 'encrypt_response',
@@ -333,26 +358,6 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
     setState(() {});
   }
 
-  void _openChat(String peer, {String? initial, bool initiator = true}) {
-    if (!recent.contains(peer)) {
-      recent.insert(0, peer);
-      if (recent.length > 50) recent.removeLast();
-      _saveRecent();
-    }
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(
-          service: _service,
-          peer: peer,
-          initialPassword: initial,
-          initiator: initiator,
-          onClosed: _loadRecent,
-        ),
-      ),
-    );
-  }
-
   @override
   void dispose() {
     _service.dispose();
@@ -361,7 +366,7 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
   }
 
   @override
-  Widget build(BuildContext c) {
+  Widget build(BuildContext ctx) {
     final contacts = registered.where((u) => u != widget.nick).toList();
     return Scaffold(
       appBar: AppBar(
@@ -369,7 +374,7 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
           icon: Icon(Icons.person),
           onPressed: () {
             Navigator.push(
-              context,
+              ctx,
               MaterialPageRoute(
                 builder: (_) => SettingsScreen(
                   fontScale: widget.fontScale,
@@ -383,7 +388,7 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
         bottom: TabBar(controller: _tabCtrl, tabs: [Tab(text: 'Недавние'), Tab(text: 'Все')]),
       ),
       body: TabBarView(controller: _tabCtrl, children: [
-        // === НЕДАВНИЕ + приглашения ===
+        // Recent + invites
         ListView(children: [
           if (pending.isNotEmpty) ...[
             SizedBox(height: 8),
@@ -400,6 +405,7 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
                   ),
                 )),
             Divider(),
+
           ],
           ...recent.map((u) {
             final name = phoneToName[u] ?? u;
@@ -412,23 +418,23 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
                 setState(() {});
               },
               background: Container(
-                  color: Colors.red,
-                  alignment: Alignment.centerRight,
-                  padding: EdgeInsets.only(right: 20),
-                  child: Icon(Icons.delete, color: Colors.white)),
+                color: Colors.red,
+                alignment: Alignment.centerRight,
+                padding: EdgeInsets.only(right: 20),
+                child: Icon(Icons.delete, color: Colors.white),
+              ),
               child: ListTile(
                 title: Text(name),
                 onTap: () => _openChat(u),
                 onLongPress: () async {
-                  // запрашиваем разрешение перед записью
                   if (!await Permission.contacts.request().isGranted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
+                    ScaffoldMessenger.of(ctx).showSnackBar(
                       SnackBar(content: Text('Нет разрешения на доступ к контактам')),
                     );
                     return;
                   }
                   final newName = await showDialog<String>(
-                    context: context,
+                    context: ctx,
                     builder: (_) {
                       final ctrl = TextEditingController(text: phoneToName[u] ?? '');
                       return AlertDialog(
@@ -438,8 +444,8 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
                           decoration: InputDecoration(hintText: 'Имя контакта'),
                         ),
                         actions: [
-                          TextButton(onPressed: () => Navigator.pop(context), child: Text('Отмена')),
-                          TextButton(onPressed: () => Navigator.pop(context, ctrl.text.trim()), child: Text('OK')),
+                          TextButton(onPressed: () => Navigator.pop(ctx), child: Text('Отмена')),
+                          TextButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: Text('OK')),
                         ],
                       );
                     },
@@ -455,7 +461,7 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
                         phoneToName[u] = newName;
                       });
                     } catch (e) {
-                      ScaffoldMessenger.of(context).showSnackBar(
+                      ScaffoldMessenger.of(ctx).showSnackBar(
                         SnackBar(content: Text('Не удалось сохранить контакт: $e')),
                       );
                     }
@@ -465,7 +471,7 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
             );
           }).toList(),
         ]),
-        // === ВСЕ + приглашения ===
+        // All + invites
         ListView(padding: EdgeInsets.all(8), children: [
           if (pending.isNotEmpty) ...[
             Text('Приглашения:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -483,7 +489,9 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
             Divider(),
           ],
           if (contacts.isEmpty)
-            Center(child: Text('Нет зарегистрированных контактов.\nНажмите + чтобы добавить.', textAlign: TextAlign.center))
+            Center(
+              child: Text('Нет зарегистрированных контактов.\nНажмите + чтобы добавить.', textAlign: TextAlign.center),
+            )
           else
             ...contacts.map((u) {
               final name = phoneToName[u] ?? u;
@@ -507,7 +515,6 @@ class ChatScreen extends StatefulWidget {
   final String? initialPassword;
   final bool initiator;
   final VoidCallback onClosed;
-
   ChatScreen({
     required this.service,
     required this.peer,
@@ -515,7 +522,6 @@ class ChatScreen extends StatefulWidget {
     this.initiator = true,
     required this.onClosed,
   });
-
   @override
   _ChatScreenState createState() => _ChatScreenState();
 }
@@ -529,7 +535,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _showEmojiPicker = false;
 
   final List<String> _emojis = [
-    "😀","😁","😂","🤣","😃","😄","😅","😆","😉","😊","😋","😎","😍","😘","🥰","😗","😙","😚","🙂","🤗","🤩","🤔","😐","😑","😶","🙄","😏","😣","😥","😮","🤐","😯","😪","😫","🥱","😴","😌","😛","😜","😝","🤤","😒","😓","😔","😕","🙃","🤑","😲","☹️","🙁","😖","😞","😟","😤","😢","😭","😦","😧","😨","😩","🤯","😬","😰","😱","🥵","🥶","😳","🤪","😵","😡","😠","🤬","😷","🤒","🤕","🤢","🤮","🥴","😇","🥳","🥺","🤠","🤡","🤥","🤫","🤭","🧐","🤓","😈","👿","👹","👺","💀","👻","👽","🤖","💩"
+    "😀","😁","😂","🤣","😃","😄","😅","😆","😉","😊","😋","😎","😍","😘","🥰","😗","😙","😚","🙂","🤗","🤩","🤔"
   ];
 
   @override
@@ -545,7 +551,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _onPkt(Map<String, dynamic> pkt) {
+  Future<void> _onPkt(Map<String, dynamic> pkt) async {
     final t = pkt['type'];
     if (t == 'encrypt_request' && pkt['from'] == widget.peer) {
       final sk = deriveSessionKey(widget.peer, widget.service.nick);
@@ -558,11 +564,22 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() {});
     }
     if (t == 'end_encryption' && pkt['to'] == widget.service.nick) {
-      _closeSession();
+      _terminateEncryption(applyLocalOnly: true);
     }
     if (t == 'message' && pkt['from'] == widget.peer) {
       final dec = decryptStr(pkt['content'], deriveMsgKey(keys[widget.peer]!));
       messages.add({'who': widget.peer, 'text': dec});
+      setState(() {});
+    }
+    if (t == 'file' && pkt['from'] == widget.peer) {
+      final key = deriveMsgKey(keys[widget.peer]!);
+      final b64 = decryptStr(pkt['content'], key);
+      final bytes = base64.decode(b64);
+      final name = pkt['fileName'] as String;
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$name');
+      await file.writeAsBytes(bytes);
+      messages.add({'who': widget.peer, 'fileName': name, 'path': file.path});
       setState(() {});
     }
   }
@@ -571,13 +588,13 @@ class _ChatScreenState extends State<ChatScreen> {
     final pass = await showDialog<String>(
       context: context,
       builder: (_) {
-        final c = TextEditingController();
+        final ctl = TextEditingController();
         return AlertDialog(
           title: Text('Пароль для ${widget.peer}'),
-          content: TextField(controller: c, decoration: InputDecoration(hintText: 'Введите пароль')),
+          content: TextField(controller: ctl, decoration: InputDecoration(hintText: 'Введите пароль')),
           actions: [
             TextButton(onPressed: () => Navigator.pop(context), child: Text('Отмена')),
-            TextButton(onPressed: () => Navigator.pop(context, c.text.trim()), child: Text('OK')),
+            TextButton(onPressed: () => Navigator.pop(context, ctl.text.trim()), child: Text('OK')),
           ],
         );
       },
@@ -592,6 +609,331 @@ class _ChatScreenState extends State<ChatScreen> {
         'enc_pass': encryptStr(pass, sk),
       });
     }
+  }
+
+  void _terminateEncryption({bool applyLocalOnly = false}) {
+    if (!applyLocalOnly) {
+      widget.service.send({
+        'type': 'end_encryption',
+        'from': widget.service.nick,
+        'to': widget.peer,
+      });
+    }
+    encrypted = false;
+    incomingPass = null;
+    messages.clear();
+    keys.remove(widget.peer);
+    setState(() {});
+  }
+
+  void _sendMessage() {
+    if (!encrypted) return;
+    final t = _msgCtrl.text.trim();
+    if (t.isEmpty) return;
+    final enc = encryptStr(t, deriveMsgKey(keys[widget.peer]!));
+    widget.service.send({
+      'type': 'message',
+      'from': widget.service.nick,
+      'to': widget.peer,
+      'encrypted': true,
+      'content': enc,
+    });
+    messages.add({'who': widget.service.nick, 'text': t});
+    _msgCtrl.clear();
+    setState(() {});
+  }
+
+  Future<void> _onAttach() async {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: Icon(Icons.photo),
+            title: Text('Галерея'),
+            onTap: () {
+              Navigator.pop(context);
+              _pickImage(ImageSource.gallery);
+            },
+          ),
+          ListTile(
+            leading: Icon(Icons.camera_alt),
+            title: Text('Камера'),
+            onTap: () {
+              Navigator.pop(context);
+              _pickImage(ImageSource.camera);
+            },
+          ),
+          ListTile(
+            leading: Icon(Icons.attach_file),
+            title: Text('Файл'),
+            onTap: () {
+              Navigator.pop(context);
+              _pickAnyFile();
+            },
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Future<void> _pickImage(ImageSource src) async {
+    final picker = ImagePicker();
+    final file = await picker.pickImage(source: src);
+    if (file == null) return;
+    final bytes = await file.readAsBytes();
+    await _storeAndSend(bytes, file.name);
+  }
+
+  Future<void> _pickAnyFile() async {
+    final res = await FilePicker.platform.pickFiles();
+    if (res == null) return;
+    final single = res.files.single;
+    List<int>? bytes = single.bytes;
+    if (bytes == null && single.path != null) {
+      bytes = await File(single.path!).readAsBytes();
+    }
+    if (bytes == null) return;
+    await _storeAndSend(bytes, single.name);
+  }
+
+  Future<void> _storeAndSend(List<int> bytes, String name) async {
+    // 1) сохраняем локально
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/$name');
+    await file.writeAsBytes(bytes);
+
+    // 2) посылаем серверу
+    final key = deriveMsgKey(keys[widget.peer]!);
+    final dataB64 = base64.encode(bytes);
+    final enc = encryptStr(dataB64, key);
+    widget.service.send({
+      'type': 'file',
+      'from': widget.service.nick,
+      'to': widget.peer,
+      'fileName': name,
+      'content': enc,
+    });
+
+    // 3) показываем в чате отправителю
+    messages.add({'who': widget.service.nick, 'fileName': name, 'path': file.path});
+    setState(() {});
+  }
+
+  bool _isImage(String name) {
+    final ext = name.toLowerCase().split('.').last;
+    return ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'].contains(ext);
+  }
+
+  void _onEmojiSelected(String em) {
+    final t = _msgCtrl.text;
+    final sel = _msgCtrl.selection;
+    final nt = t.replaceRange(sel.start, sel.end, em);
+    _msgCtrl.text = nt;
+    _msgCtrl.selection = TextSelection.collapsed(offset: sel.start + em.length);
+    setState(() {});
+  }
+
+  @override
+  void dispose() {
+    widget.onClosed();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext c) {
+    final pass = keys[widget.peer] ?? '';
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.peer)),
+      body: Column(children: [
+        // Encryption status
+        Container(
+          color: encrypted ? Colors.green : Colors.red,
+          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Expanded(
+              child: Text(
+                encrypted ? 'Шифрование активно: $pass' : 'Не зашифровано',
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
+            TextButton(
+              onPressed: encrypted ? () => _terminateEncryption() : _askPassword,
+              child: Text(encrypted ? 'Разорвать' : 'Зашифровать'),
+              style: TextButton.styleFrom(
+                backgroundColor: encrypted ? Colors.red : Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+            ),
+          ]),
+        ),
+
+        // Incoming pass prompt
+        if (!encrypted && incomingPass != null)
+          Container(
+            color: Colors.blue,
+            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Expanded(child: Text('Пароль: $incomingPass', style: TextStyle(color: Colors.white))),
+              TextButton(
+                onPressed: _acceptIncoming,
+                child: Text('Принять'),
+                style: TextButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.blue),
+              ),
+              TextButton(
+                onPressed: _declineIncoming,
+                child: Text('Отклонить'),
+                style: TextButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.blue),
+              ),
+            ]),
+          ),
+
+        // Chat messages
+        Expanded(
+          child: ListView.builder(
+            itemCount: messages.length,
+            itemBuilder: (_, i) {
+              final m = messages[i];
+              final me = m['who'] == widget.service.nick;
+              final bg = me ? Colors.blueAccent : Colors.grey[800];
+
+              if (m.containsKey('fileName')) {
+                final name = m['fileName']!;
+                final path = m['path'];
+                if (_isImage(name) && path != null) {
+                  // Image thumbnail
+                  return Align(
+                    alignment: me ? Alignment.centerRight : Alignment.centerLeft,
+                    child: GestureDetector(
+                      onTap: () => OpenFile.open(path),
+                      onLongPress: () async {
+                        final saveDir = (await getExternalStorageDirectory())?.path;
+                        if (saveDir != null) {
+                          final dst = File('$saveDir/$name');
+                          await File(path).copy(dst.path);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Сохранено в $saveDir')),
+                          );
+                        }
+                      },
+                      child: Container(
+                        margin: EdgeInsets.all(6),
+                        decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(12)),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.file(File(path!), width: 150, height: 150, fit: BoxFit.cover),
+                        ),
+                      ),
+                    ),
+                  );
+                } else {
+                  // Non-image file with icon+extension
+                  final ext = name.contains('.') ? name.split('.').last.toUpperCase() : '';
+                  return Align(
+                    alignment: me ? Alignment.centerRight : Alignment.centerLeft,
+                    child: GestureDetector(
+                      onTap: path != null ? () => OpenFile.open(path) : null,
+                      onLongPress: () async {
+                        final saveDir = (await getExternalStorageDirectory())?.path;
+                        if (saveDir != null) {
+                          final dst = File('$saveDir/$name');
+                          await File(path!).copy(dst.path);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Сохранено в $saveDir')),
+                          );
+                        }
+                      },
+                      child: Container(
+                        margin: EdgeInsets.all(6),
+                        padding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                        decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(12)),
+                        child: Column(mainAxisSize: MainAxisSize.min, children: [
+                          Container(
+                            width: 72,
+                            height: 72,
+                            decoration: BoxDecoration(color: Colors.grey[700], borderRadius: BorderRadius.circular(8)),
+                            alignment: Alignment.center,
+                            child: Text(ext, style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                          ),
+                          SizedBox(height: 6),
+                          SizedBox(
+                            width: 100,
+                            child: Text(
+                              name,
+                              style: TextStyle(color: Colors.white, fontSize: 12),
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ]),
+                      ),
+                    ),
+                  );
+                }
+              } else {
+                // Plain text
+                return Align(
+                  alignment: me ? Alignment.centerRight : Alignment.centerLeft,
+                  child: Container(
+                    margin: EdgeInsets.all(6),
+                    padding: EdgeInsets.all(10),
+                    decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(12)),
+                    child: Text(m['text']!, style: TextStyle(color: Colors.white)),
+                  ),
+                );
+              }
+            },
+          ),
+        ),
+
+        Divider(height: 1),
+
+        // Input row
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Row(children: [
+            IconButton(
+              icon: Icon(Icons.add, color: encrypted ? Colors.blue : Colors.grey),
+              onPressed: encrypted ? _onAttach : null,
+            ),
+            Expanded(
+              child: TextField(
+                controller: _msgCtrl,
+                enabled: encrypted,
+                decoration: InputDecoration(
+                  hintText: encrypted ? 'Сообщение' : 'Сначала зашифруйте диалог',
+                ),
+              ),
+            ),
+            IconButton(
+              icon: Icon(Icons.emoji_emotions, color: Colors.orange),
+              onPressed: encrypted ? () => setState(() => _showEmojiPicker = !_showEmojiPicker) : null,
+            ),
+            IconButton(icon: Icon(Icons.send), onPressed: encrypted ? _sendMessage : null),
+          ]),
+        ),
+
+        // Emoji picker
+        if (_showEmojiPicker && encrypted)
+          Container(
+            height: 200,
+            color: Colors.grey[900],
+            child: GridView.builder(
+              padding: EdgeInsets.all(8),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 8,
+                mainAxisSpacing: 8,
+                crossAxisSpacing: 8,
+              ),
+              itemCount: _emojis.length,
+              itemBuilder: (_, idx) => GestureDetector(
+                onTap: () => _onEmojiSelected(_emojis[idx]),
+                child: Center(child: Text(_emojis[idx], style: TextStyle(fontSize: 24))),
+              ),
+            ),
+          ),
+      ]),
+    );
   }
 
   void _acceptIncoming() {
@@ -617,172 +959,12 @@ class _ChatScreenState extends State<ChatScreen> {
     incomingPass = null;
     setState(() {});
   }
-
-  void _terminateEncryption() {
-    widget.service.send({
-      'type': 'end_encryption',
-      'from': widget.service.nick,
-      'to': widget.peer,
-    });
-    widget.service.send({
-      'type': 'end_encryption',
-      'from': widget.peer,
-      'to': widget.service.nick,
-    });
-    _closeSession();
-  }
-
-  void _closeSession() {
-    encrypted = false;
-    incomingPass = null;
-    messages.clear();
-    keys.remove(widget.peer);
-    setState(() {});
-  }
-
-  void _sendMessage() {
-    if (!encrypted) return;
-    final t = _msgCtrl.text.trim();
-    if (t.isEmpty) return;
-    final enc = encryptStr(t, deriveMsgKey(keys[widget.peer]!));
-    widget.service.send({
-      'type': 'message',
-      'from': widget.service.nick,
-      'to': widget.peer,
-      'encrypted': true,
-      'content': enc,
-    });
-    messages.add({'who': widget.service.nick, 'text': t});
-    _msgCtrl.clear();
-    setState(() {});
-  }
-
-  void _onEmojiSelected(String emoji) {
-    final text = _msgCtrl.text;
-    final sel = _msgCtrl.selection;
-    final newText = text.replaceRange(sel.start, sel.end, emoji);
-    _msgCtrl.text = newText;
-    _msgCtrl.selection = TextSelection.collapsed(offset: sel.start + emoji.length);
-    setState(() {});
-  }
-
-  @override
-  void dispose() {
-    widget.onClosed();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext c) {
-    final pass = keys[widget.peer] ?? '';
-    return Scaffold(
-      appBar: AppBar(title: Text(widget.peer)),
-      body: Column(children: [
-        Container(
-          color: encrypted ? Colors.green : Colors.red,
-          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Expanded(
-              child: Text(
-                encrypted ? 'Шифрование активно: $pass' : 'Не зашифровано',
-                style: TextStyle(color: Colors.white),
-              ),
-            ),
-            TextButton(
-              onPressed: encrypted ? _terminateEncryption : _askPassword,
-              child: Text(encrypted ? 'Разорвать' : 'Зашифровать'),
-              style: TextButton.styleFrom(
-                backgroundColor: encrypted ? Colors.red : Colors.blue,
-                foregroundColor: Colors.white,
-              ),
-            ),
-          ]),
-        ),
-        if (!encrypted && incomingPass != null) ...[
-          Container(
-            color: Colors.blue,
-            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Expanded(child: Text('Пароль: $incomingPass', style: TextStyle(color: Colors.white))),
-              TextButton(
-                  onPressed: _acceptIncoming,
-                  child: Text('Принять'),
-                  style: TextButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.blue)),
-              TextButton(
-                  onPressed: _declineIncoming,
-                  child: Text('Отклонить'),
-                  style: TextButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.blue)),
-            ]),
-          ),
-        ],
-        Expanded(
-          child: ListView.builder(
-            itemCount: messages.length,
-            itemBuilder: (_, i) {
-              final m = messages[i], me = m['who'] == widget.service.nick;
-              return Align(
-                alignment: me ? Alignment.centerRight : Alignment.centerLeft,
-                child: Container(
-                  margin: EdgeInsets.all(4),
-                  padding: EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: me ? Colors.blueAccent : Colors.grey[800],
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(m['text']!),
-                ),
-              );
-            },
-          ),
-        ),
-        Divider(height: 1),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Row(children: [
-            Expanded(
-              child: TextField(
-                controller: _msgCtrl,
-                enabled: encrypted,
-                decoration: InputDecoration(
-                  hintText: encrypted ? 'Сообщение' : 'Сначала шифруйте диалог',
-                ),
-              ),
-            ),
-            IconButton(
-              icon: Icon(Icons.emoji_emotions_outlined, color: Colors.orange),
-              onPressed: encrypted ? () => setState(() => _showEmojiPicker = !_showEmojiPicker) : null,
-              tooltip: 'Смайлики',
-            ),
-            IconButton(icon: Icon(Icons.send), onPressed: encrypted ? _sendMessage : null),
-          ]),
-        ),
-        if (_showEmojiPicker && encrypted)
-          Container(
-            height: 250,
-            color: Colors.grey[900],
-            child: GridView.builder(
-              padding: EdgeInsets.all(8),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 8, mainAxisSpacing: 8, crossAxisSpacing: 8),
-              itemCount: _emojis.length,
-              itemBuilder: (_, i) => GestureDetector(
-                onTap: () => _onEmojiSelected(_emojis[i]),
-                child: Center(child: Text(_emojis[i], style: TextStyle(fontSize: 28))),
-              ),
-            ),
-          ),
-      ]),
-    );
-  }
 }
 
 class SettingsScreen extends StatelessWidget {
   final double fontScale;
   final ValueChanged<double> onFontScaleChanged;
-
-  SettingsScreen({
-    required this.fontScale,
-    required this.onFontScaleChanged,
-  });
+  SettingsScreen({required this.fontScale, required this.onFontScaleChanged});
 
   Future<void> _logout(BuildContext c) async {
     final prefs = await SharedPreferences.getInstance();
@@ -827,11 +1009,7 @@ class SettingsScreen extends StatelessWidget {
 class FontSizeScreen extends StatefulWidget {
   final double initialScale;
   final ValueChanged<double> onChanged;
-
-  FontSizeScreen({
-    required this.initialScale,
-    required this.onChanged,
-  });
+  FontSizeScreen({required this.initialScale, required this.onChanged});
 
   @override
   _FontSizeScreenState createState() => _FontSizeScreenState();

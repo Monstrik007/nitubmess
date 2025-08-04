@@ -39,6 +39,11 @@ dependencies:
   country_code_picker: ^3.3.0
   cupertino_icons: ^1.0.8
   modal_bottom_sheet: ^3.0.0
+  image_picker: ^0.8.7+3      # для фото/видео
+  file_picker: ^5.2.5         # для любых файлов
+  path_provider: ^2.0.9       # чтобы получить каталог для сохранения
+  open_file: ^3.2.1           # чтобы «открыть» файл в системе
+
 
 
 
