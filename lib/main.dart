@@ -12,20 +12,58 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final prefs = await SharedPreferences.getInstance();
   final phone = prefs.getString('phone');
-  runApp(MyMessengerApp(initialPhone: phone));
+  final fontScale = prefs.getDouble('fontScale') ?? 1.0;
+  runApp(MyMessengerApp(
+    initialPhone: phone,
+    initialFontScale: fontScale,
+  ));
 }
 
-class MyMessengerApp extends StatelessWidget {
+class MyMessengerApp extends StatefulWidget {
   final String? initialPhone;
-  MyMessengerApp({this.initialPhone});
+  final double initialFontScale;
+  MyMessengerApp({
+    this.initialPhone,
+    required this.initialFontScale,
+  });
+  @override
+  _MyMessengerAppState createState() => _MyMessengerAppState();
+}
+
+class _MyMessengerAppState extends State<MyMessengerApp> {
+  double _fontScale = 1.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _fontScale = widget.initialFontScale;
+  }
+
+  Future<void> _updateFontScale(double scale) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('fontScale', scale);
+    setState(() => _fontScale = scale);
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Secure Flutter Chat',
       theme: ThemeData.dark(),
-      home: initialPhone == null
+      builder: (context, child) {
+        final mq = MediaQuery.of(context);
+        return MediaQuery(
+          data: mq.copyWith(textScaleFactor: _fontScale),
+          child: child!,
+        );
+      },
+      home: widget.initialPhone == null
           ? PhoneInputScreen()
-          : ChatListScreen(nick: initialPhone!),
+          : ChatListScreen(
+              nick: widget.initialPhone!,
+              fontScale: _fontScale,
+              onFontScaleChanged: _updateFontScale,
+            ),
     );
   }
 }
@@ -48,9 +86,18 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('phone', full);
     await prefs.setBool('sync', _syncContacts);
+
+    // передаём текущий fontScale и колбэк обновления из корня
+    final rootState = context.findAncestorStateOfType<_MyMessengerAppState>()!;
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(builder: (_) => ChatListScreen(nick: full)),
+      MaterialPageRoute(
+        builder: (_) => ChatListScreen(
+          nick: full,
+          fontScale: rootState._fontScale,
+          onFontScaleChanged: rootState._updateFontScale,
+        ),
+      ),
     );
   }
 
@@ -58,7 +105,10 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
   Widget build(BuildContext c) {
     return Scaffold(
       appBar: AppBar(title: Text('Телефон'), actions: [
-        TextButton(onPressed: () => exit(0), child: Text('Отмена', style: TextStyle(color: Colors.white))),
+        TextButton(
+          onPressed: () => exit(0),
+          child: Text('Отмена', style: TextStyle(color: Colors.white)),
+        ),
       ]),
       body: Padding(
         padding: const EdgeInsets.all(16),
@@ -135,11 +185,14 @@ List<int> deriveSessionKey(String a, String b) {
   var s = [a, b]..sort();
   return sha256.convert(utf8.encode(s.join())).bytes;
 }
+
 List<int> deriveMsgKey(String p) => sha256.convert(utf8.encode(p)).bytes;
-List<int> xorBytes(List<int> d, List<int> k) => [
-      for (var i = 0; i < d.length; i++) d[i] ^ k[i % k.length]
-    ];
+
+List<int> xorBytes(List<int> d, List<int> k) =>
+    [for (var i = 0; i < d.length; i++) d[i] ^ k[i % k.length]];
+
 String encryptStr(String s, List<int> k) => base64.encode(xorBytes(utf8.encode(s), k));
+
 String decryptStr(String s, List<int> k) {
   try {
     return utf8.decode(xorBytes(base64.decode(s), k));
@@ -150,7 +203,15 @@ String decryptStr(String s, List<int> k) {
 
 class ChatListScreen extends StatefulWidget {
   final String nick;
-  ChatListScreen({required this.nick});
+  final double fontScale;
+  final ValueChanged<double> onFontScaleChanged;
+
+  ChatListScreen({
+    required this.nick,
+    required this.fontScale,
+    required this.onFontScaleChanged,
+  });
+
   @override
   _ChatListScreenState createState() => _ChatListScreenState();
 }
@@ -189,11 +250,12 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
 
     if (_syncContacts && await Permission.contacts.request().isGranted) {
       final cs = await ContactsService.getContacts(withThumbnails: false);
-      for (var c in cs)
+      for (var c in cs) {
         for (var pn in c.phones ?? []) {
           final num = pn.value!.replaceAll(RegExp(r'\D'), '').trim();
           phoneToName[num] = c.displayName ?? num;
         }
+      }
     }
 
     _service = ChatService();
@@ -291,10 +353,6 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
     );
   }
 
-  void _goSettings() {
-    Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()));
-  }
-
   @override
   void dispose() {
     _service.dispose();
@@ -307,7 +365,20 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
     final contacts = registered.where((u) => u != widget.nick).toList();
     return Scaffold(
       appBar: AppBar(
-        leading: IconButton(icon: Icon(Icons.person), onPressed: _goSettings),
+        leading: IconButton(
+          icon: Icon(Icons.person),
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => SettingsScreen(
+                  fontScale: widget.fontScale,
+                  onFontScaleChanged: widget.onFontScaleChanged,
+                ),
+              ),
+            );
+          },
+        ),
         title: Text('Контакты: ${widget.nick}'),
         bottom: TabBar(controller: _tabCtrl, tabs: [Tab(text: 'Недавние'), Tab(text: 'Все')]),
       ),
@@ -348,6 +419,48 @@ class _ChatListScreenState extends State<ChatListScreen> with SingleTickerProvid
               child: ListTile(
                 title: Text(name),
                 onTap: () => _openChat(u),
+                onLongPress: () async {
+                  // запрашиваем разрешение перед записью
+                  if (!await Permission.contacts.request().isGranted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Нет разрешения на доступ к контактам')),
+                    );
+                    return;
+                  }
+                  final newName = await showDialog<String>(
+                    context: context,
+                    builder: (_) {
+                      final ctrl = TextEditingController(text: phoneToName[u] ?? '');
+                      return AlertDialog(
+                        title: Text('Добавить в контакты'),
+                        content: TextField(
+                          controller: ctrl,
+                          decoration: InputDecoration(hintText: 'Имя контакта'),
+                        ),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(context), child: Text('Отмена')),
+                          TextButton(onPressed: () => Navigator.pop(context, ctrl.text.trim()), child: Text('OK')),
+                        ],
+                      );
+                    },
+                  );
+                  if (newName != null && newName.isNotEmpty) {
+                    try {
+                      final contact = Contact(
+                        displayName: newName,
+                        phones: [Item(label: 'mobile', value: u)],
+                      );
+                      await ContactsService.addContact(contact);
+                      setState(() {
+                        phoneToName[u] = newName;
+                      });
+                    } catch (e) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Не удалось сохранить контакт: $e')),
+                      );
+                    }
+                  }
+                },
               ),
             );
           }).toList(),
@@ -394,6 +507,7 @@ class ChatScreen extends StatefulWidget {
   final String? initialPassword;
   final bool initiator;
   final VoidCallback onClosed;
+
   ChatScreen({
     required this.service,
     required this.peer,
@@ -401,6 +515,7 @@ class ChatScreen extends StatefulWidget {
     this.initiator = true,
     required this.onClosed,
   });
+
   @override
   _ChatScreenState createState() => _ChatScreenState();
 }
@@ -411,16 +526,10 @@ class _ChatScreenState extends State<ChatScreen> {
   Map<String, String> keys = {};
   bool encrypted = false;
   String? incomingPass;
+  bool _showEmojiPicker = false;
 
- bool _showEmojiPicker = false;
   final List<String> _emojis = [
-    // Apple-style popular emojis (можно расширить)
-    "😀","😁","😂","🤣","😃","😄","😅","😆","😉","😊","😋","😎","😍","😘","🥰","😗","😙","😚",
-    "🙂","🤗","🤩","🤔","🤨","😐","😑","😶","🙄","😏","😣","😥","😮","🤐","😯","😪","😫","🥱",
-    "😴","😌","😛","😜","😝","🤤","😒","😓","😔","😕","🙃","🤑","😲","☹️","🙁","😖","😞","😟",
-    "😤","😢","😭","😦","😧","😨","😩","🤯","😬","😰","😱","🥵","🥶","😳","🤪","😵","😡","😠",
-    "🤬","😷","🤒","🤕","🤢","🤮","🥴","😇","🥳","🥺","🤠","🤡","🤥","🤫","🤭","🧐","🤓","😈",
-    "👿","👹","👺","💀","👻","👽","🤖","💩","😺","😸","😹","😻","😼","😽","🙀","😿","😾"
+    "😀","😁","😂","🤣","😃","😄","😅","😆","😉","😊","😋","😎","😍","😘","🥰","😗","😙","😚","🙂","🤗","🤩","🤔","😐","😑","😶","🙄","😏","😣","😥","😮","🤐","😯","😪","😫","🥱","😴","😌","😛","😜","😝","🤤","😒","😓","😔","😕","🙃","🤑","😲","☹️","🙁","😖","😞","😟","😤","😢","😭","😦","😧","😨","😩","🤯","😬","😰","😱","🥵","🥶","😳","🤪","😵","😡","😠","🤬","😷","🤒","🤕","🤢","🤮","🥴","😇","🥳","🥺","🤠","🤡","🤥","🤫","🤭","🧐","🤓","😈","👿","👹","👺","💀","👻","👽","🤖","💩"
   ];
 
   @override
@@ -444,9 +553,7 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() {});
     }
     if (t == 'encrypt_response' && pkt['to'] == widget.service.nick) {
-      if (pkt['status'] == 'accept') {
-        encrypted = true;
-      }
+      if (pkt['status'] == 'accept') encrypted = true;
       incomingPass = null;
       setState(() {});
     }
@@ -552,16 +659,13 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _onEmojiSelected(String emoji) {
     final text = _msgCtrl.text;
-    final selection = _msgCtrl.selection;
-    final newText = text.replaceRange(
-      selection.start,
-      selection.end,
-      emoji,
-    );
+    final sel = _msgCtrl.selection;
+    final newText = text.replaceRange(sel.start, sel.end, emoji);
     _msgCtrl.text = newText;
-    _msgCtrl.selection = TextSelection.collapsed(offset: selection.start + emoji.length);
+    _msgCtrl.selection = TextSelection.collapsed(offset: sel.start + emoji.length);
     setState(() {});
   }
+
   @override
   void dispose() {
     widget.onClosed();
@@ -595,14 +699,19 @@ class _ChatScreenState extends State<ChatScreen> {
           ]),
         ),
         if (!encrypted && incomingPass != null) ...[
-          // приглашение прямо в чате
           Container(
             color: Colors.blue,
             padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
               Expanded(child: Text('Пароль: $incomingPass', style: TextStyle(color: Colors.white))),
-              TextButton(onPressed: _acceptIncoming, child: Text('Принять'), style: TextButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.blue)),
-              TextButton(onPressed: _declineIncoming, child: Text('Отклонить'), style: TextButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.blue)),
+              TextButton(
+                  onPressed: _acceptIncoming,
+                  child: Text('Принять'),
+                  style: TextButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.blue)),
+              TextButton(
+                  onPressed: _declineIncoming,
+                  child: Text('Отклонить'),
+                  style: TextButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.blue)),
             ]),
           ),
         ],
@@ -639,45 +748,42 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
-            // --- Кнопка смайлика ---
             IconButton(
               icon: Icon(Icons.emoji_emotions_outlined, color: Colors.orange),
-              onPressed: encrypted
-                  ? () => setState(() => _showEmojiPicker = !_showEmojiPicker)
-                  : null,
+              onPressed: encrypted ? () => setState(() => _showEmojiPicker = !_showEmojiPicker) : null,
               tooltip: 'Смайлики',
             ),
             IconButton(icon: Icon(Icons.send), onPressed: encrypted ? _sendMessage : null),
           ]),
         ),
-
-         // --- Панель emoji picker ---
         if (_showEmojiPicker && encrypted)
           Container(
             height: 250,
             color: Colors.grey[900],
             child: GridView.builder(
               padding: EdgeInsets.all(8),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 8,
-                mainAxisSpacing: 8,
-                crossAxisSpacing: 8,
-              ),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 8, mainAxisSpacing: 8, crossAxisSpacing: 8),
               itemCount: _emojis.length,
               itemBuilder: (_, i) => GestureDetector(
-                onTap: () {
-                  _onEmojiSelected(_emojis[i]);
-                },
-                child: Center(
-                  child: Text(
-                    _emojis[i],
-                    style: TextStyle(fontSize: 28),),),),),),
+                onTap: () => _onEmojiSelected(_emojis[i]),
+                child: Center(child: Text(_emojis[i], style: TextStyle(fontSize: 28))),
+              ),
+            ),
+          ),
       ]),
     );
   }
 }
 
 class SettingsScreen extends StatelessWidget {
+  final double fontScale;
+  final ValueChanged<double> onFontScaleChanged;
+
+  SettingsScreen({
+    required this.fontScale,
+    required this.onFontScaleChanged,
+  });
+
   Future<void> _logout(BuildContext c) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('phone');
@@ -697,8 +803,74 @@ class SettingsScreen extends StatelessWidget {
           title: Text('Выйти'),
           onTap: () => _logout(c),
         ),
-        // тут можно добавить ещё свои настройки
+        ListTile(
+          leading: Icon(Icons.text_fields),
+          title: Text('Размер шрифта'),
+          subtitle: Text('${(fontScale * 100).round()}%'),
+          onTap: () {
+            Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => FontSizeScreen(
+                  initialScale: fontScale,
+                  onChanged: onFontScaleChanged,
+                ),
+              ),
+            );
+          },
+        ),
       ]),
+    );
+  }
+}
+
+class FontSizeScreen extends StatefulWidget {
+  final double initialScale;
+  final ValueChanged<double> onChanged;
+
+  FontSizeScreen({
+    required this.initialScale,
+    required this.onChanged,
+  });
+
+  @override
+  _FontSizeScreenState createState() => _FontSizeScreenState();
+}
+
+class _FontSizeScreenState extends State<FontSizeScreen> {
+  late double _current;
+
+  @override
+  void initState() {
+    super.initState();
+    _current = widget.initialScale;
+  }
+
+  @override
+  Widget build(BuildContext c) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Размер шрифта')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(children: [
+          Text('Регулируйте размер шрифта', style: TextStyle(fontSize: 18)),
+          SizedBox(height: 24),
+          Slider(
+            value: _current,
+            min: 0.8,
+            max: 1.5,
+            divisions: 14,
+            label: '${(_current * 100).round()}%',
+            onChanged: (v) {
+              setState(() => _current = v);
+              widget.onChanged(v);
+            },
+          ),
+          SizedBox(height: 16),
+          Text('Пример: Заголовок', style: TextStyle(fontSize: 20)),
+          Text('Пример: Обычный текст', style: TextStyle(fontSize: 16)),
+        ]),
+      ),
     );
   }
 }
